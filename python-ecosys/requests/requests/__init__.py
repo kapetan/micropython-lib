@@ -38,25 +38,15 @@ def request(
     url,
     data=None,
     json=None,
-    headers=None,
+    headers={},
     stream=None,
     auth=None,
     timeout=None,
     parse_headers=True,
 ):
-    if headers is None:
-        headers = {}
-
     redirect = None  # redirection url, None means no redirection
     chunked_data = data and getattr(data, "__next__", None) and not getattr(data, "__len__", None)
-
-    if auth is not None:
-        import ubinascii
-
-        username, password = auth
-        formated = b"{}:{}".format(username, password)
-        formated = str(ubinascii.b2a_base64(formated)[:-1], "ascii")
-        headers["Authorization"] = "Basic {}".format(formated)
+    chunked_encoding = False
 
     try:
         proto, dummy, host, path = url.split("/", 3)
@@ -98,8 +88,16 @@ def request(
             s = context.wrap_socket(s, server_hostname=host)
         s.write(b"%s /%s HTTP/1.0\r\n" % (method, path))
 
+        if auth is not None:
+            import ubinascii
+
+            username, password = auth
+            formated = b"{}:{}".format(username, password)
+            formated = str(ubinascii.b2a_base64(formated)[:-1], "ascii")
+            s.write(b"Authorization: Basic %s\r\n" % formated)
+
         if "Host" not in headers:
-            headers["Host"] = host
+            s.write(b"Host: %s\r\n" % host)
 
         if json is not None:
             assert data is None
@@ -108,17 +106,18 @@ def request(
             data = ujson.dumps(json)
 
             if "Content-Type" not in headers:
-                headers["Content-Type"] = "application/json"
+                s.write(b"Content-Type: application/json\r\n")
 
         if data:
             if chunked_data:
                 if "Transfer-Encoding" not in headers and "Content-Length" not in headers:
-                    headers["Transfer-Encoding"] = "chunked"
+                    chunked_encoding = True
+                    s.write(b"Transfer-Encoding: chunked\r\n")
             elif "Content-Length" not in headers:
-                headers["Content-Length"] = str(len(data))
+                s.write(b"Content-Length: %d\r\n" % len(data))
 
         if "Connection" not in headers:
-            headers["Connection"] = "close"
+            s.write(b"Connection: close\r\n")
 
         # Iterate over keys to avoid tuple alloc
         for k in headers:
@@ -131,7 +130,7 @@ def request(
 
         if data:
             if chunked_data:
-                if headers.get("Transfer-Encoding", None) == "chunked":
+                if chunked_encoding:
                     for chunk in data:
                         s.write(b"%x\r\n" % len(chunk))
                         s.write(chunk)
